@@ -19,11 +19,7 @@
 
 ## 安装
 
-1. 克隆项目:
-```bash
-git clone https://github.com/MilleXi/stock_trading.git
-cd stock_trading
-```
+1.leesun
 
 2. 使用Poetry安装依赖:
 ```bash
