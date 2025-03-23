@@ -17,42 +17,96 @@ from visualization import (
     plot_accuracy_comparison
 )
 
+
 warnings.filterwarnings("ignore", category=FutureWarning)
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
+
+class EarlyStopping:
+    def __init__(self, patience=10):
+        self.patience = patience
+        self.counter = 0
+        self.best_loss = float('inf')
+
+    def __call__(self, current_loss):
+        if current_loss < self.best_loss:
+            self.best_loss = current_loss
+            self.counter = 0
+        else:
+            self.counter += 1
+            if self.counter >= self.patience:
+                return True  # 触发早停
+        return False
+
+
 class LSTMModel(nn.Module):
-    def __init__(self, input_size, hidden_size, num_layers, output_size, dropout=0.2):
+    def __init__(self, input_size, hidden_size=128, num_layers=3, dropout=0.3):
         super(LSTMModel, self).__init__()
-        self.hidden_size = hidden_size
-        self.num_layers = num_layers
-        self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True, dropout=dropout)
-        self.fc = nn.Linear(hidden_size, output_size)
+        self.lstm = nn.LSTM(input_size, hidden_size, num_layers,
+                            batch_first=True, dropout=dropout)
+        self.fc = nn.Sequential(
+            nn.Linear(hidden_size, 64),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(64, 1)
+        )
 
     def forward(self, x):
-        h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(device)
-        c0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(device)
+        h0 = torch.zeros(self.lstm.num_layers, x.size(0), self.lstm.hidden_size).to(device)
+        c0 = torch.zeros(self.lstm.num_layers, x.size(0), self.lstm.hidden_size).to(device)
         out, _ = self.lstm(x, (h0, c0))
         out = self.fc(out[:, -1, :])
         return out
 
+
 def get_stock_data(ticker, data_dir='data'):
     file_path = os.path.join(data_dir, f'{ticker}.csv')
-    
-    # Read the CSV file and set '日期' as the index
-    data = pd.read_csv(file_path, index_col='日期', parse_dates=True)
-    
-    return data
+    try:
+        data = pd.read_csv(file_path, index_col='日期', parse_dates=True)
+        return data
+    except Exception as e:
+        print(f"加载股票数据失败: {ticker} - {str(e)}")
+        raise
+
 
 def format_feature(data):
-    # 确保特征名称与CSV文件中的列名一致
+    """
+    格式化特征数据，准备用于LSTM模型
+    
+    Args:
+        data: 包含所有特征的DataFrame
+    
+    Returns:
+        X: 特征矩阵
+        y: 目标变量（价格变化百分比）
+    """
+    # 确保所有需要的特征都存在
     features = [
         '成交量', 'Year', 'Month', 'Day', 'MA5', 'MA10', 'MA20', 'RSI', 'MACD',
         'VWAP', 'SMA', 'Std_dev', 'Upper_band', 'Lower_band', 'Relative_Performance', 'ATR',
-        'Close_yes', 'Open_yes', 'High_yes', 'Low_yes'
+        'Close_yes', 'Open_yes', 'High_yes', 'Low_yes', 'log_return', 'volume_trend_interaction',
+        'volatility_trend_interaction', 'month_cos', 'month_sin', 'day_of_week_sin', 'day_of_week_cos',
+        'close_lag_1_diff', 'close_lag_1', 'close_lag_2', 'close_lag_3', 'close_lag_4', 'close_lag_5', 'trend_z_5',
+        'trend_z_20', 'trend_z_60', 'trend_ratio_5', 'trend_ratio_20', 'trend_ratio_60'
     ]
-    X = data[features].iloc[1:]
-    y = data['收盘'].pct_change().iloc[1:]  # 确保使用正确的列名
+    
+    # 检查是否所有特征都存在
+    missing_features = [f for f in features if f not in data.columns]
+    if missing_features:
+        raise ValueError(f"缺少以下特征: {missing_features}")
+    
+    # 提取特征和目标变量
+    X = data[features]
+    
+    # 计算价格变化百分比作为目标变量
+    y = (data['收盘'] - data['收盘'].shift(1)) / data['收盘'].shift(1)
+    y = y.dropna()
+    
+    # 确保X和y有相同的索引
+    X = X.loc[y.index]
+    
     return X, y
+
 
 def prepare_data(data, n_steps):
     X, y = [], []
@@ -72,16 +126,19 @@ def visualize_predictions(ticker, data, predict_result, test_indices, prediction
     accuracy = 1 - np.mean(np.abs(predicted_prices - actual_prices) / actual_prices)
     r2 = r2_score(actual_prices, predicted_prices)
     mape = np.mean(np.abs((actual_prices - predicted_prices) / actual_prices)) * 100
+    sharpe = np.sqrt(252) * (np.mean(predictions) / np.std(predictions))  # 示例夏普比率
 
-    metrics = {'rmse': rmse, 'mae': mae, 'accuracy': accuracy, 'r2': r2, 'mape': mape, 'mse': mse}
+    metrics = {'rmse': rmse, 'mae': mae, 'accuracy': accuracy, 'r2': r2, 'mape': mape, 'mse': mse,
+               'sharpe_ratio': sharpe}
     plot_stock_prediction(ticker, test_indices, actual_prices, predicted_prices, metrics, save_dir)
 
     return metrics
 
+
 def predict_future_days(model, data, X_scaled, scaler_y, n_steps, days_to_predict=5):
     """
     预测未来几天的股票价格
-    
+
     Args:
         model: 训练好的LSTM模型
         data: 原始股票数据
@@ -89,7 +146,7 @@ def predict_future_days(model, data, X_scaled, scaler_y, n_steps, days_to_predic
         scaler_y: 用于反归一化预测结果的缩放器
         n_steps: 时间步长
         days_to_predict: 要预测的天数
-    
+
     Returns:
         future_dates: 未来日期列表
         future_prices: 预测的未来价格列表
@@ -97,44 +154,46 @@ def predict_future_days(model, data, X_scaled, scaler_y, n_steps, days_to_predic
     model.eval()
     last_sequence = X_scaled[-n_steps:].reshape(1, n_steps, X_scaled.shape[1])
     last_price = data['收盘'].iloc[-1]
-    
+
     future_prices = [last_price]
     future_dates = [data.index[-1]]
-    
+
     # 获取最后一个交易日的日期
     last_date = pd.to_datetime(data.index[-1])
     
+    # 简单地生成未来日期，每次加1天
+    # 注意：这里没有考虑周末和节假日，实际应用中可能需要更复杂的逻辑
+    future_dates_list = [last_date + pd.Timedelta(days=i+1) for i in range(days_to_predict)]
+
     with torch.no_grad():
         current_sequence = torch.tensor(last_sequence, dtype=torch.float32).to(device)
-        
+
         for i in range(days_to_predict):
             # 预测下一天的价格变化百分比
             pred = model(current_sequence)
             pred_np = pred.cpu().numpy().reshape(-1, 1)
             pred_percentage = scaler_y.inverse_transform(pred_np)[0][0]
-            
+
             # 计算下一天的价格
             next_price = future_prices[-1] * (1 + pred_percentage)
             future_prices.append(next_price)
-            
-            # 生成下一个交易日日期（简单地加1天，实际应用中可能需要考虑周末和节假日）
-            next_date = last_date + pd.Timedelta(days=i+1)
-            future_dates.append(next_date)
-            
+
             # 更新序列用于下一次预测
             # 注意：在实际应用中，我们需要更新X的所有特征，这里简化处理
             # 实际应用中应该基于新预测的价格重新计算所有技术指标
             new_sequence = np.roll(current_sequence.cpu().numpy(), -1, axis=1)
             # 这里简化处理，实际应用中需要计算新的特征值
-            new_sequence[0, -1, :] = new_sequence[0, -2, :]  
+            new_sequence[0, -1, :] = new_sequence[0, -2, :]
             current_sequence = torch.tensor(new_sequence, dtype=torch.float32).to(device)
-    
+
     # 返回未来日期和预测价格（不包括当前价格）
     # 将日期转换为字符串格式，以确保在传递过程中不会丢失日期信息
-    future_dates_str = [date.strftime('%Y-%m-%d') for date in future_dates[1:]]
+    future_dates_str = [date.strftime('%Y-%m-%d') for date in future_dates_list]
     return future_dates_str, future_prices[1:]
 
-def train_and_predict_lstm(ticker, data, X, y, save_dir, n_steps=60, num_epochs=500, batch_size=32, learning_rate=0.001):
+
+def train_and_predict_lstm(ticker, data, X, y, save_dir, n_steps=60, num_epochs=500, batch_size=32,
+                           learning_rate=0.001):
     # 数据归一化和准备部分
     scaler_y = MinMaxScaler()
     scaler_X = MinMaxScaler()
@@ -143,12 +202,12 @@ def train_and_predict_lstm(ticker, data, X, y, save_dir, n_steps=60, num_epochs=
     X_scaled = scaler_X.fit_transform(X)
 
     X_train, y_train = prepare_data(X_scaled, n_steps)
-    y_train = y_scaled[n_steps-1:-1]
+    y_train = y_scaled[n_steps - 1:-1]
 
     train_per = 0.8
     split_index = int(train_per * len(X_train))
-    X_val = X_train[split_index-n_steps+1:]
-    y_val = y_train[split_index-n_steps+1:]
+    X_val = X_train[split_index - n_steps + 1:]
+    y_val = y_train[split_index - n_steps + 1:]
     X_train = X_train[:split_index]
     y_train = y_train[:split_index]
 
@@ -163,7 +222,8 @@ def train_and_predict_lstm(ticker, data, X, y, save_dir, n_steps=60, num_epochs=
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
 
-    model = LSTMModel(input_size=X_train.shape[2], hidden_size=50, num_layers=2, output_size=1).to(device)
+    # 修改这里，去掉 output_size 参数
+    model = LSTMModel(input_size=X_train.shape[2], hidden_size=50, num_layers=2).to(device)
     criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=50, gamma=0.1)
@@ -214,8 +274,8 @@ def train_and_predict_lstm(ticker, data, X, y, save_dir, n_steps=60, num_epochs=
 
     with torch.no_grad():
         for i in range(1 + split_index, len(X_scaled) + 1):
-            x_input = torch.tensor(X_scaled[i - n_steps:i].reshape(1, n_steps, X_train.shape[2]), 
-                                 dtype=torch.float32).to(device)
+            x_input = torch.tensor(X_scaled[i - n_steps:i].reshape(1, n_steps, X_train.shape[2]),
+                                   dtype=torch.float32).to(device)
             y_pred = model(x_input)
             y_pred = scaler_y.inverse_transform(y_pred.cpu().numpy().reshape(-1, 1))
             predictions.append((1 + y_pred[0][0]) * data['收盘'].iloc[i - 2])
@@ -242,8 +302,8 @@ def train_and_predict_lstm(ticker, data, X, y, save_dir, n_steps=60, num_epochs=
     for date, price in zip(future_dates, future_prices):
         print(f"{date}: {price:.2f}")  # 不需要再调用strftime
 
-
     return predict_result, test_indices, predictions, actual_percentages, future_df  # 修改这里，添加future_df作为返回值
+
 
 def save_predictions_with_indices(ticker, test_indices, predictions, save_dir):
     df = pd.DataFrame({
@@ -297,7 +357,8 @@ def predict(ticker_name, stock_data, stock_features, save_dir, epochs=500, batch
         'Average MAE': metrics_df['mae'].mean(),
         'Average R²': metrics_df['r2'].mean(),
         'Average MAPE': metrics_df['mape'].mean(),
-        'Average MSE': metrics_df['mse'].mean()
+        'Average MSE': metrics_df['mse'].mean(),
+        'Average Sharpe Ratio': metrics_df['sharpe_ratio'].mean()
     }
 
     # 保存汇总报告，指定编码为 utf-8
@@ -311,14 +372,17 @@ def predict(ticker_name, stock_data, stock_features, save_dir, epochs=500, batch
 
     return metrics, future_df
 
+
 if __name__ == "__main__":
     tickers = [
-        '300059'            # 工业
+        '300059'  # 工业
     ]
 
     save_dir = 'results'  # 设置保存目录
     for ticker_name in tickers:
         stock_data = get_stock_data(ticker_name)
+        # 生成增强特征
+
         stock_features = format_feature(stock_data)
         predict(
             ticker_name=ticker_name,
@@ -326,3 +390,4 @@ if __name__ == "__main__":
             stock_features=stock_features,
             save_dir=save_dir
         )
+

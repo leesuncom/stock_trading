@@ -1,5 +1,6 @@
 import gradio as gr
 import pandas as pd
+import numpy as np
 import torch
 import os
 from PIL import Image
@@ -8,6 +9,63 @@ from stock_prediction_lstm import predict, format_feature
 from RLagent import process_stock
 from datetime import datetime
 from process_stock_data import get_stock_data, clean_csv_files
+
+
+# 添加enhanced_feature_engineering函数
+def enhanced_feature_engineering(data):
+    """
+    增强特征工程，创建更多预测所需的特征
+
+    Args:
+        data: 包含基本特征的DataFrame
+
+    Returns:
+        增强后的DataFrame，包含所有需要的特征
+    """
+    # 确保索引是日期类型
+    if not isinstance(data.index, pd.DatetimeIndex):
+        data.index = pd.to_datetime(data.index)
+
+    # 计算对数收益率
+    data['log_return'] = np.log(data['收盘'] / data['收盘'].shift(1))
+
+    # 计算交易量与趋势的交互特征
+    data['volume_trend_interaction'] = data['成交量'] * (data['收盘'] - data['收盘'].shift(1))
+
+    # 计算波动率与趋势的交互特征
+    data['volatility_trend_interaction'] = data['Std_dev'] * (data['收盘'] - data['收盘'].shift(1))
+
+    # 添加月份和星期的周期性特征
+    data['month_cos'] = np.cos(2 * np.pi * data.index.month / 12)
+    data['month_sin'] = np.sin(2 * np.pi * data.index.month / 12)
+    data['day_of_week_sin'] = np.sin(2 * np.pi * data.index.dayofweek / 7)
+    data['day_of_week_cos'] = np.cos(2 * np.pi * data.index.dayofweek / 7)
+
+    # 添加收盘价差分和滞后特征
+    data['close_lag_1_diff'] = data['收盘'].diff(1)
+    data['close_lag_1'] = data['收盘'].shift(1)
+    data['close_lag_2'] = data['收盘'].shift(2)
+    data['close_lag_3'] = data['收盘'].shift(3)
+    data['close_lag_4'] = data['收盘'].shift(4)
+    data['close_lag_5'] = data['收盘'].shift(5)
+
+    # 计算趋势Z分数
+    data['trend_z_5'] = (data['收盘'] - data['MA5']) / data['Std_dev']
+    data['trend_z_20'] = (data['收盘'] - data['MA20']) / data['Std_dev']
+    # 对于60日均线，可能需要先计算
+    data['MA60'] = data['收盘'].rolling(window=60).mean()
+    data['trend_z_60'] = (data['收盘'] - data['MA60']) / data['Std_dev']
+
+    # 计算趋势比率
+    data['trend_ratio_5'] = data['收盘'] / data['MA5']
+    data['trend_ratio_20'] = data['收盘'] / data['MA20']
+    data['trend_ratio_60'] = data['收盘'] / data['MA60']
+
+    # 删除NaN值
+    data = data.dropna()
+
+    return data
+
 
 # os.environ['HTTP_PROXY'] = 'http://127.0.0.1:7890'
 # os.environ['HTTPS_PROXY'] = 'http://127.0.0.1:7890'
@@ -41,11 +99,16 @@ def get_data(ticker, start_date, end_date, period="daily", progress=gr.Progress(
 def process_and_predict(temp_csv_path, epochs, batch_size, learning_rate,
                         window_size, initial_money, agent_iterations, save_dir):
     if not temp_csv_path:
-        return [None] * 13  # 返回空结果
+        return [None] * 14  # 更新为14个None，因为我们现在有14个输出
 
     try:
-        ticker = os.path.basename(temp_csv_path).split('.')[0]  # 修正这里，使用.而不是_分割
-        stock_data = pd.read_csv(temp_csv_path)
+        ticker = os.path.basename(temp_csv_path).split('.')[0]
+        stock_data = pd.read_csv(temp_csv_path, index_col='日期', parse_dates=True)
+
+        # 应用增强特征工程
+        stock_data = enhanced_feature_engineering(stock_data)
+
+        # 现在再调用format_feature
         stock_features = format_feature(stock_data)
 
         metrics, future_df = predict(
@@ -63,12 +126,12 @@ def process_and_predict(temp_csv_path, epochs, batch_size, learning_rate,
             # 如果日期显示为1970年，说明日期可能是时间戳或格式不正确
             # 我们可以生成新的日期序列，从当前日期开始
             today = datetime.now()
-            future_dates = [(today + pd.Timedelta(days=i+1)).strftime('%Y-%m-%d') for i in range(len(future_df))]
-            
+            future_dates = [(today + pd.Timedelta(days=i + 1)).strftime('%Y-%m-%d') for i in range(len(future_df))]
+
             # 替换DataFrame中的日期列
             if 'Date' in future_df.columns:
                 future_df['Date'] = future_dates
-            
+
             # 对价格列进行四舍五入
             if 'Predicted_Price' in future_df.columns:
                 future_df['Predicted_Price'] = future_df['Predicted_Price'].round(2)
@@ -95,6 +158,9 @@ def process_and_predict(temp_csv_path, epochs, batch_size, learning_rate,
         total_gains = round(trading_results['total_gains'], 2)
         investment_return = round(trading_results['investment_return'], 2)
 
+        # 添加夏普比率计算，如果metrics中没有提供
+        sharpe_ratio = round(metrics.get('sharpe_ratio', 0), 2)
+
         return [
             [prediction_plot, loss_plot, earnings_plot, trades_plot],
             round(metrics['accuracy'] * 100, 2),
@@ -103,6 +169,7 @@ def process_and_predict(temp_csv_path, epochs, batch_size, learning_rate,
             round(metrics['mse'], 2),
             round(metrics['mape'], 2),
             round(metrics['r2'], 2),
+            sharpe_ratio,  # 添加夏普比率到返回值列表中
             total_gains,
             investment_return,
             trading_results['trades_buy'],
@@ -112,7 +179,7 @@ def process_and_predict(temp_csv_path, epochs, batch_size, learning_rate,
         ]
     except Exception as e:
         print(f"处理错误: {str(e)}")
-        return [None] * 13
+        return [None] * 14  # 更新为14个None，因为我们现在有14个输出
 
 
 with gr.Blocks() as demo:
@@ -170,6 +237,13 @@ with gr.Blocks() as demo:
                                     height="auto", object_fit="contain")
 
     with gr.Row():
+        gr.Markdown("### 未来5天预测价格")
+        future_prices_df = gr.DataFrame(
+            headers=["Date", "Predicted_Price"],
+            label="未来5天预测价格"
+        )
+
+    with gr.Row():
         with gr.Column(scale=1):
             gr.Markdown("### 预测指标")
             accuracy_output = gr.Number(label="预测准确率 (%)")
@@ -178,7 +252,7 @@ with gr.Blocks() as demo:
             mse_output = gr.Number(label="MSE (均方误差)")
             mape_output = gr.Number(label="MAPE (平均绝对百分比误差)")
             r2_output = gr.Number(label="R² (决定系数)")
-
+            sharpe_ratio = gr.Number(label="Sharpe Ratio (夏普比率)")
 
         with gr.Column(scale=1):
             gr.Markdown("### 交易指标")
@@ -186,13 +260,6 @@ with gr.Blocks() as demo:
             return_output = gr.Number(label="投资回报率 (%)")
             trades_buy_output = gr.Number(label="买入次数")
             trades_sell_output = gr.Number(label="卖出次数")
-
-    with gr.Row():
-        gr.Markdown("### 未来5天预测价格")
-        future_prices_df = gr.DataFrame(
-            headers=["Date", "Predicted_Price"],
-            label="未来5天预测价格"
-        )
 
     with gr.Row():
         gr.Markdown("### 交易记录")
@@ -244,6 +311,7 @@ with gr.Blocks() as demo:
             mse_output,
             mape_output,
             r2_output,
+            sharpe_ratio,  # 确保这个输出与函数返回值对应
             gains_output,
             return_output,
             trades_buy_output,
@@ -254,3 +322,4 @@ with gr.Blocks() as demo:
     )
 
 demo.launch(server_port=7860, share=True)
+

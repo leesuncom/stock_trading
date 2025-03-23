@@ -1,0 +1,6 @@
+2025-03-23 15:01:13,896 - __main__ - INFO - 成功加载股票数据: 300059
+2025-03-23 15:01:13,897 - __main__ - INFO - 成功格式化特征数据: 880 samples
+2025-03-23 15:01:13,897 - __main__ - INFO - 
+开始处理股票: 300059
+2025-03-23 15:01:15,236 - __main__ - ERROR - 处理股票失败: 300059 - 'LSTMModel' object has no attribute 'num_layers'
+2025-03-23 15:01:15,236 - __main__ - ERROR - 跳过股票: 300059 - 'LSTMModel' object has no attribute 'num_layers'

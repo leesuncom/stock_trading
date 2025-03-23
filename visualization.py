@@ -17,14 +17,14 @@ def plot_stock_prediction(ticker, test_indices, actual_prices, predicted_prices,
         str: 保存的图片路径
     """
     plt.figure(figsize=(15, 7))
-    plt.plot(test_indices, actual_prices, label='Actual Price', color='blue', linewidth=2, alpha=0.7)
-    plt.plot(test_indices, predicted_prices, label='LSTM Prediction', color='red', linewidth=2, linestyle='--',
+    plt.plot(test_indices, actual_prices, label='实际价格', color='blue', linewidth=2, alpha=0.7)
+    plt.plot(test_indices, predicted_prices, label='模型预测价格', color='red', linewidth=2, linestyle='--',
              alpha=0.7)
 
     plt.title(
-        f'{ticker} Stock Price Prediction\nRMSE: {metrics["rmse"]:.2f}, MAE: {metrics["mae"]:.2f}, R²: {metrics["r2"]:.2f}, MAPE: {metrics["mape"]:.2f}, MSE: {metrics["mse"]:.2f}')
-    plt.xlabel('Date')
-    plt.ylabel('Price')
+        f'{ticker} 股票价格预测\nRMSE: {metrics["rmse"]:.2f}, MAE: {metrics["mae"]:.2f}, R²: {metrics["r2"]:.2f}, MAPE: {metrics["mape"]:.2f}, MSE: {metrics["mse"]:.2f}')
+    plt.xlabel('日期')
+    plt.ylabel('价格')
     plt.xticks(rotation=45)
     plt.grid(True, alpha=0.3)
     plt.legend()
