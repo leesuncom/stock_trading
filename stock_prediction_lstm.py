@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 from tqdm import tqdm
 import torch
+from sklearn.metrics import r2_score
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
@@ -36,17 +37,21 @@ class LSTMModel(nn.Module):
 
 def get_stock_data(ticker, data_dir='data'):
     file_path = os.path.join(data_dir, f'{ticker}.csv')
-    data = pd.read_csv(file_path, index_col='Date', parse_dates=True)
+    
+    # Read the CSV file and set '日期' as the index
+    data = pd.read_csv(file_path, index_col='日期', parse_dates=True)
+    
     return data
 
 def format_feature(data):
+    # 确保特征名称与CSV文件中的列名一致
     features = [
-        'Volume', 'Year', 'Month', 'Day', 'MA5', 'MA10', 'MA20', 'RSI', 'MACD',
+        '成交量', 'Year', 'Month', 'Day', 'MA5', 'MA10', 'MA20', 'RSI', 'MACD',
         'VWAP', 'SMA', 'Std_dev', 'Upper_band', 'Lower_band', 'Relative_Performance', 'ATR',
         'Close_yes', 'Open_yes', 'High_yes', 'Low_yes'
     ]
     X = data[features].iloc[1:]
-    y = data['Close'].pct_change().iloc[1:]
+    y = data['收盘'].pct_change().iloc[1:]  # 确保使用正确的列名
     return X, y
 
 def prepare_data(data, n_steps):
@@ -56,19 +61,78 @@ def prepare_data(data, n_steps):
         y.append(data[i + n_steps])
     return np.array(X), np.array(y)
 
+
 def visualize_predictions(ticker, data, predict_result, test_indices, predictions, actual_percentages, save_dir):
-    actual_prices = data['Close'].loc[test_indices].values
+    actual_prices = data['收盘'].loc[test_indices].values
     predicted_prices = np.array(predictions)
-    
+
     mse = np.mean((predicted_prices - actual_prices) ** 2)
     rmse = np.sqrt(mse)
     mae = np.mean(np.abs(predicted_prices - actual_prices))
     accuracy = 1 - np.mean(np.abs(predicted_prices - actual_prices) / actual_prices)
-    
-    metrics = {'rmse': rmse, 'mae': mae, 'accuracy': accuracy}
+    r2 = r2_score(actual_prices, predicted_prices)
+    mape = np.mean(np.abs((actual_prices - predicted_prices) / actual_prices)) * 100
+
+    metrics = {'rmse': rmse, 'mae': mae, 'accuracy': accuracy, 'r2': r2, 'mape': mape, 'mse': mse}
     plot_stock_prediction(ticker, test_indices, actual_prices, predicted_prices, metrics, save_dir)
-    
+
     return metrics
+
+def predict_future_days(model, data, X_scaled, scaler_y, n_steps, days_to_predict=5):
+    """
+    预测未来几天的股票价格
+    
+    Args:
+        model: 训练好的LSTM模型
+        data: 原始股票数据
+        X_scaled: 归一化后的特征数据
+        scaler_y: 用于反归一化预测结果的缩放器
+        n_steps: 时间步长
+        days_to_predict: 要预测的天数
+    
+    Returns:
+        future_dates: 未来日期列表
+        future_prices: 预测的未来价格列表
+    """
+    model.eval()
+    last_sequence = X_scaled[-n_steps:].reshape(1, n_steps, X_scaled.shape[1])
+    last_price = data['收盘'].iloc[-1]
+    
+    future_prices = [last_price]
+    future_dates = [data.index[-1]]
+    
+    # 获取最后一个交易日的日期
+    last_date = pd.to_datetime(data.index[-1])
+    
+    with torch.no_grad():
+        current_sequence = torch.tensor(last_sequence, dtype=torch.float32).to(device)
+        
+        for i in range(days_to_predict):
+            # 预测下一天的价格变化百分比
+            pred = model(current_sequence)
+            pred_np = pred.cpu().numpy().reshape(-1, 1)
+            pred_percentage = scaler_y.inverse_transform(pred_np)[0][0]
+            
+            # 计算下一天的价格
+            next_price = future_prices[-1] * (1 + pred_percentage)
+            future_prices.append(next_price)
+            
+            # 生成下一个交易日日期（简单地加1天，实际应用中可能需要考虑周末和节假日）
+            next_date = last_date + pd.Timedelta(days=i+1)
+            future_dates.append(next_date)
+            
+            # 更新序列用于下一次预测
+            # 注意：在实际应用中，我们需要更新X的所有特征，这里简化处理
+            # 实际应用中应该基于新预测的价格重新计算所有技术指标
+            new_sequence = np.roll(current_sequence.cpu().numpy(), -1, axis=1)
+            # 这里简化处理，实际应用中需要计算新的特征值
+            new_sequence[0, -1, :] = new_sequence[0, -2, :]  
+            current_sequence = torch.tensor(new_sequence, dtype=torch.float32).to(device)
+    
+    # 返回未来日期和预测价格（不包括当前价格）
+    # 将日期转换为字符串格式，以确保在传递过程中不会丢失日期信息
+    future_dates_str = [date.strftime('%Y-%m-%d') for date in future_dates[1:]]
+    return future_dates_str, future_prices[1:]
 
 def train_and_predict_lstm(ticker, data, X, y, save_dir, n_steps=60, num_epochs=500, batch_size=32, learning_rate=0.001):
     # 数据归一化和准备部分
@@ -154,7 +218,7 @@ def train_and_predict_lstm(ticker, data, X, y, save_dir, n_steps=60, num_epochs=
                                  dtype=torch.float32).to(device)
             y_pred = model(x_input)
             y_pred = scaler_y.inverse_transform(y_pred.cpu().numpy().reshape(-1, 1))
-            predictions.append((1 + y_pred[0][0]) * data['Close'].iloc[i - 2])
+            predictions.append((1 + y_pred[0][0]) * data['收盘'].iloc[i - 2])
             test_indices.append(data.index[i - 1])
             predict_percentages.append(y_pred[0][0] * 100)
             actual_percentages.append(y[i - 1] * 100)
@@ -163,7 +227,23 @@ def train_and_predict_lstm(ticker, data, X, y, save_dir, n_steps=60, num_epochs=
     plot_cumulative_earnings(ticker, test_indices, actual_percentages, predict_percentages, save_dir)
 
     predict_result = {str(date): pred / 100 for date, pred in zip(test_indices, predict_percentages)}
-    return predict_result, test_indices, predictions, actual_percentages
+
+    # 预测未来5天价格
+    future_dates, future_prices = predict_future_days(model, data, X_scaled, scaler_y, n_steps)
+
+    # 保存未来预测结果
+    future_df = pd.DataFrame({
+        'Date': future_dates,  # 现在future_dates已经是字符串格式
+        'Predicted_Price': future_prices
+    })
+    os.makedirs(os.path.join(save_dir, 'future_predictions'), exist_ok=True)
+    future_df.to_csv(os.path.join(save_dir, 'future_predictions', f'{ticker}_future_predictions.csv'))
+    print(f"\n未来5天 {ticker} 的预测价格:")
+    for date, price in zip(future_dates, future_prices):
+        print(f"{date}: {price:.2f}")  # 不需要再调用strftime
+
+
+    return predict_result, test_indices, predictions, actual_percentages, future_df  # 修改这里，添加future_df作为返回值
 
 def save_predictions_with_indices(ticker, test_indices, predictions, save_dir):
     df = pd.DataFrame({
@@ -178,6 +258,7 @@ def save_predictions_with_indices(ticker, test_indices, predictions, save_dir):
 
     print(f'Saved predictions for {ticker} to {file_path}')
 
+
 def predict(ticker_name, stock_data, stock_features, save_dir, epochs=500, batch_size=32, learning_rate=0.001):
     all_predictions_lstm = {}
     prediction_metrics = {}
@@ -185,15 +266,16 @@ def predict(ticker_name, stock_data, stock_features, save_dir, epochs=500, batch
     print(f"\nProcessing {ticker_name}")
     data = stock_data
     X, y = stock_features
-    
-    predict_result, test_indices, predictions, actual_percentages = train_and_predict_lstm(
+
+    predict_result, test_indices, predictions, actual_percentages, future_df = train_and_predict_lstm(
         ticker_name, data, X, y, save_dir, num_epochs=epochs, batch_size=batch_size, learning_rate=learning_rate
     )
     all_predictions_lstm[ticker_name] = predict_result
-    
-    metrics = visualize_predictions(ticker_name, data, predict_result, test_indices, predictions, actual_percentages, save_dir)
+
+    metrics = visualize_predictions(ticker_name, data, predict_result, test_indices, predictions, actual_percentages,
+                                    save_dir)
     prediction_metrics[ticker_name] = metrics
-    
+
     save_predictions_with_indices(ticker_name, test_indices, predictions, save_dir)
 
     # 保存预测指标
@@ -212,11 +294,14 @@ def predict(ticker_name, stock_data, stock_features, save_dir, epochs=500, batch
         'Best Stock': max(prediction_metrics.items(), key=lambda x: x[1]['accuracy'])[0],
         'Worst Stock': min(prediction_metrics.items(), key=lambda x: x[1]['accuracy'])[0],
         'Average RMSE': metrics_df['rmse'].mean(),
-        'Average MAE': metrics_df['mae'].mean()
+        'Average MAE': metrics_df['mae'].mean(),
+        'Average R²': metrics_df['r2'].mean(),
+        'Average MAPE': metrics_df['mape'].mean(),
+        'Average MSE': metrics_df['mse'].mean()
     }
 
-    # 保存汇总报告
-    with open(os.path.join(save_dir, 'output', f'{ticker_name}_prediction_summary.txt'), 'w') as f:
+    # 保存汇总报告，指定编码为 utf-8
+    with open(os.path.join(save_dir, 'output', f'{ticker_name}_prediction_summary.txt'), 'w', encoding='utf-8') as f:
         for key, value in summary.items():
             f.write(f'{key}: {value}\n')
 
@@ -224,16 +309,11 @@ def predict(ticker_name, stock_data, stock_features, save_dir, epochs=500, batch
     for key, value in summary.items():
         print(f"{key}: {value}")
 
-    return metrics
+    return metrics, future_df
 
 if __name__ == "__main__":
     tickers = [
-        'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA',       # 科技
-        'JPM', 'BAC', 'C', 'WFC', 'GS',                # 金融
-        'JNJ', 'PFE', 'MRK', 'ABBV', 'BMY',            # 医药
-        'XOM', 'CVX', 'COP', 'SLB', 'BKR',             # 能源
-        'DIS', 'NFLX', 'CMCSA', 'NKE', 'SBUX',         # 消费
-        'CAT', 'DE', 'MMM', 'GE', 'HON'                # 工业
+        '300059'            # 工业
     ]
 
     save_dir = 'results'  # 设置保存目录

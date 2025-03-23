@@ -202,7 +202,7 @@ class Agent:
                 states_buy.append(t)
                 transaction_history.append({
                     'day': t,
-                    'operate': 'buy',
+                    'operate': '买',
                     'price': self.trend[t],
                     'investment': 0,
                     'total_balance': initial_money
@@ -218,7 +218,7 @@ class Agent:
                     invest = 0
                 transaction_history.append({
                     'day': t,
-                    'operate': 'sell',
+                    'operate': '卖',
                     'price': self.trend[t],
                     'investment': invest,
                     'total_balance': initial_money
@@ -278,12 +278,7 @@ def main():
     """主函数：执行所有股票的交易策略"""
     # 股票列表
     tickers = [
-        'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA',       # 科技
-        'JPM', 'BAC', 'C', 'WFC', 'GS',                # 金融
-        'JNJ', 'PFE', 'MRK', 'ABBV', 'BMY',            # 医药
-        'XOM', 'CVX', 'COP', 'SLB', 'BKR',             # 能源
-        'DIS', 'NFLX', 'CMCSA', 'NKE', 'SBUX',         # 消费
-        'CAT', 'DE', 'MMM', 'GE', 'HON'                # 工业
+        '300059'             # 工业
     ]
     save_dir = 'results'
     # 处理每只股票

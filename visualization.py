@@ -18,26 +18,28 @@ def plot_stock_prediction(ticker, test_indices, actual_prices, predicted_prices,
     """
     plt.figure(figsize=(15, 7))
     plt.plot(test_indices, actual_prices, label='Actual Price', color='blue', linewidth=2, alpha=0.7)
-    plt.plot(test_indices, predicted_prices, label='LSTM Prediction', color='red', linewidth=2, linestyle='--', alpha=0.7)
-    
-    plt.title(f'{ticker} Stock Price Prediction\nRMSE: {metrics["rmse"]:.2f}, MAE: {metrics["mae"]:.2f}')
+    plt.plot(test_indices, predicted_prices, label='LSTM Prediction', color='red', linewidth=2, linestyle='--',
+             alpha=0.7)
+
+    plt.title(
+        f'{ticker} Stock Price Prediction\nRMSE: {metrics["rmse"]:.2f}, MAE: {metrics["mae"]:.2f}, R²: {metrics["r2"]:.2f}, MAPE: {metrics["mape"]:.2f}, MSE: {metrics["mse"]:.2f}')
     plt.xlabel('Date')
     plt.ylabel('Price')
     plt.xticks(rotation=45)
     plt.grid(True, alpha=0.3)
     plt.legend()
-    
-    plt.text(0.02, 0.95, f'Prediction Accuracy: {metrics["accuracy"]*100:.2f}%', 
+
+    plt.text(0.02, 0.95, f'Prediction Accuracy: {metrics["accuracy"] * 100:.2f}%',
              transform=plt.gca().transAxes, bbox=dict(facecolor='white', alpha=0.8))
-    
+
     plt.tight_layout()
-    
+
     prediction_dir = os.path.join(save_dir, 'pic/predictions')
     os.makedirs(prediction_dir, exist_ok=True)
     save_path = os.path.join(prediction_dir, f'{ticker}_prediction.png')
     plt.savefig(save_path)
     plt.close()
-    
+
     return save_path
 
 def plot_training_loss(ticker, train_losses, val_losses, save_dir):
